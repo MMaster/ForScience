@@ -18,6 +18,8 @@ namespace ForScience
         string stateBiome = null;
         ExperimentSituations stateSituation = 0;
 
+        int skippedUpdatesLeft = 60;
+
         //thread control
         bool autoTransfer = true;
         System.Diagnostics.Stopwatch stopwatch = new System.Diagnostics.Stopwatch();
@@ -69,16 +71,24 @@ namespace ForScience
             else if (HighLogic.CurrentGame.Mode == Game.Modes.CAREER | HighLogic.CurrentGame.Mode == Game.Modes.SCIENCE_SANDBOX) // only modes with science mechanics will run
             {
                 if (FSAppButton == null) setupAppButton();
-                if (autoTransfer) // if we've enabled the app to run, on by default, the toolbar button toggles this.
+                
+                // let the game run for a while to get the UI properly initialized to handle experiments
+                if (skippedUpdatesLeft > 0)
                 {
-                    TransferScience();// always move experiment data to science container, mostly for manual experiments
-                    if (StatesHaveChanged()) // if we are in a new state, we will check and run experiments
+                    skippedUpdatesLeft--;
+                }
+                else
+                {
+                    if (autoTransfer) // if we've enabled the app to run, on by default, the toolbar button toggles this.
                     {
-                        RunScience();
+                        TransferScience();// always move experiment data to science container, mostly for manual experiments
+                        if (StatesHaveChanged()) // if we are in a new state, we will check and run experiments
+                        {
+                            RunScience();
+                        }
                     }
                 }
             }
-
         }
 
         void TransferScience() // automaticlly find, transer and consolidate science data on the vessel
@@ -105,8 +115,18 @@ namespace ForScience
             {
                 foreach (ModuleScienceExperiment currentExperiment in GetExperimentList()) // loop through all the experiments onboard
                 {
+                    ScienceExperiment se = ResearchAndDevelopment.GetExperiment(currentExperiment.experimentID);
+                    Debug.Log("[ForScience!] Checking experiment id: " + se.id + " title: " + se.experimentTitle + " unlocked: " + se.IsUnlocked() 
+                        + " isAvail: " + se.IsAvailableWhile(currentSituation(), currentBody()));
 
-                    Debug.Log("[ForScience!] Checking experiment: " + currentScienceSubject(currentExperiment.experiment).id);
+                    ScienceSubject ss = currentScienceSubject(se);
+                    //Debug.Log("ScienceSubject experiment id: " + ss.id + " title: " + ss.title);
+                    
+                    ModuleScienceExperiment me = currentExperiment;
+                    /*Debug.Log("Module Experiment id: " + me.experimentID + " cooldown: " + me.cooldownToGo
+                        + " collectable: " + me.dataIsCollectable + " deployed: " + me.Deployed + " enabled: " + me.isEnabled
+                        + " rerunnable: " + me.IsRerunnable() + " module: " + me.moduleName + " objname: " + me.name
+                        + " resettable: " + me.resettable + " resOnEVA: " + me.resettableOnEVA);*/
 
                     if (ActiveContainer().HasData(newScienceData(currentExperiment))) // skip data we already have onboard
                     {
@@ -114,32 +134,34 @@ namespace ForScience
                         Debug.Log("[ForScience!] Skipping: We already have that data onboard.");
 
                     }
-                    else if (!surfaceSamplesUnlocked() && currentExperiment.experiment.id == "surfaceSample") // check to see is surface samples are unlocked
+                    else if (!surfaceSamplesUnlocked() && se.id == "surfaceSample") // check to see is surface samples are unlocked
                     {
                         Debug.Log("[ForScience!] Skipping: Surface Samples are not unlocked.");
                     }
-                    else if (!currentExperiment.rerunnable && !IsScientistOnBoard()) // no cheating goo and materials here
+                    else if (!me.IsRerunnable() && ( !(me.resettable || me.resettableOnEVA) || !IsScientistOnBoard() )) // no cheating goo and materials here
                     {
 
-                        Debug.Log("[ForScience!] Skipping: Experiment is not repeatable.");
+                        Debug.Log("[ForScience!] Skipping: Experiment is not repeatable (and/or resettable).");
 
                     }
-                    else if (!currentExperiment.experiment.IsAvailableWhile(currentSituation(), currentBody())) // this experiement isn't available here so we skip it
+                    else if (!se.IsAvailableWhile(currentSituation(), currentBody())) // this experiement isn't available here so we skip it
                     {
 
                         Debug.Log("[ForScience!] Skipping: Experiment is not available for this situation/atmosphere.");
 
                     }
+                    else if (me.useCooldown && me.cooldownToGo > 0)
+                    {
+                        Debug.Log("[ForScience!] Skipping: Experiment on cooldown for " + me.cooldownToGo + " seconds.");
+                    }
                     else if (currentScienceValue(currentExperiment) < 0.1) // this experiment has no more value so we skip it
                     {
 
-                        Debug.Log("[ForScience!] Skipping: No more science is available: ");
-
+                        Debug.Log("[ForScience!] Skipping: No more science is available.");
                     }
                     else
                     {
-                        Debug.Log("[ForScience!] Running experiment: " + currentScienceSubject(currentExperiment.experiment).id);
-
+                        Debug.Log("[ForScience!] Running experiment: " + ss.id);
                         ActiveContainer().AddData(newScienceData(currentExperiment)); //manually add data to avoid deployexperiment state issues
                     }
 
@@ -155,19 +177,22 @@ namespace ForScience
 
         float currentScienceValue(ModuleScienceExperiment currentExperiment) // the ammount of science an experiment should return
         {
+            ScienceExperiment se = ResearchAndDevelopment.GetExperiment(currentExperiment.experimentID);
             return ResearchAndDevelopment.GetScienceValue(
-                                    currentExperiment.experiment.baseValue * currentExperiment.experiment.dataScale,
-                                    currentScienceSubject(currentExperiment.experiment));
+                                    se.baseValue * se.dataScale,
+                                    currentScienceSubject(se));
         }
 
         ScienceData newScienceData(ModuleScienceExperiment currentExperiment) // construct our own science data for an experiment
         {
+            ScienceExperiment se = ResearchAndDevelopment.GetExperiment(currentExperiment.experimentID);
+            ScienceSubject ss = currentScienceSubject(se);
             return new ScienceData(
-                       amount: currentExperiment.experiment.baseValue * currentScienceSubject(currentExperiment.experiment).dataScale,
+                       amount: se.baseValue * ss.dataScale,
                        xmitValue: currentExperiment.xmitDataScalar,
                        labBoost: 0f,
-                       id: currentScienceSubject(currentExperiment.experiment).id,
-                       dataName: currentScienceSubject(currentExperiment.experiment).title
+                       id: ss.id,
+                       dataName: ss.title
                        );
         }
 
